@@ -68,10 +68,10 @@ def geodataframe_to_points(
 
     if z_column is not None:
         zs = gdf[z_column].values.astype(float)
-    elif gdf.geometry.has_z.any():
-        zs = np.array([geom.z if geom.has_z else 0.0 for geom in gdf.geometry])
     else:
-        zs = np.zeros(len(gdf))
+        zs = np.array(
+            [geom.z if geom.has_z else 0.0 for geom in gdf.geometry]
+        )
 
     vertices = np.column_stack([xs, ys, zs])
 
