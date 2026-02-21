@@ -16,6 +16,7 @@ provides a simple, Pythonic API for common conversion tasks.
 | `xarray.DataArray` (raster) | `Points` | `raster_to_points()` |
 | `geopandas.GeoDataFrame` (Point geometries) | `Points` | `geodataframe_to_points()` |
 | `geopandas.GeoDataFrame` (LineString / MultiLineString) | `Curve` | `geodataframe_to_curve()` |
+| `geopandas.GeoDataFrame` (Polygon / MultiPolygon) | `Surface` | `geodataframe_to_surface()` |
 | `xarray.Dataset` / `DataArray` (3-D) | `BlockModel` | `xarray_to_blockmodel()` |
 
 ## Installation
@@ -84,6 +85,21 @@ with Workspace.create("output.geoh5") as ws:
     curve = geodataframe_to_curve(gdf, ws, name="Roads")
 ```
 
+### GeoDataFrame (polygons) → Surface
+
+```python
+from geoh5_bridge import geodataframe_to_surface
+
+gdf = gpd.read_file("parcels.geojson")
+
+with Workspace.create("output.geoh5") as ws:
+    surf = geodataframe_to_surface(gdf, ws, name="Parcels")
+```
+
+Polygon and MultiPolygon geometries are triangulated and stored as a
+Surface mesh. Concave polygons and polygons with holes are handled
+correctly.
+
 ### 3-D xarray / NetCDF → BlockModel
 
 ```python
@@ -117,6 +133,8 @@ Dimension names are auto-detected from common conventions (`x`/`easting`,
 |---|---|
 | [PyVista](https://docs.pyvista.org/) | 3-D plotting and mesh analysis (VTK wrapper) — useful for visualising BlockModels and Surfaces |
 | [GeoVista](https://github.com/bjlittle/geovista) | Cartographic rendering and mesh analytics powered by PyVista |
+| [geoh5vista](https://github.com/MiraGeoscience/geoh5vista) | PyVista interface for geoh5 objects — read geoh5 directly into PyVista meshes |
+| [pyvista-xarray](https://github.com/pyvista/pyvista-xarray) | xarray accessor for PyVista — plot xarray data in 3-D with PyVista |
 
 ### Drillhole / subsurface data
 
