@@ -5,10 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import geopandas as gpd
-from shapely.geometry import LineString, MultiLineString, Point
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon
 from geoh5py.workspace import Workspace
 
-from geoh5_bridge.vector import geodataframe_to_curve, geodataframe_to_points
+from geoh5_bridge.vector import (
+    geodataframe_to_curve,
+    geodataframe_to_points,
+    geodataframe_to_surface,
+)
 
 
 @pytest.fixture()
@@ -125,3 +129,82 @@ class TestGeoDataFrameToCurve:
         )
         with pytest.raises(ValueError, match="No LineString"):
             geodataframe_to_curve(gdf, workspace)
+
+
+class TestGeoDataFrameToSurface:
+    def test_basic_conversion(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"area": [1.0]},
+            geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="TestSurf")
+        assert surf is not None
+        # Square: 4 vertices, 2 triangles
+        assert len(surf.vertices) == 4
+        assert surf.cells.shape == (2, 3)
+        # All z values should be 0 for 2D polygons
+        np.testing.assert_array_equal(surf.vertices[:, 2], 0.0)
+
+    def test_data_attached(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"area": [1.0], "label": ["a"]},
+            geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="DataSurf")
+        children = [c for c in surf.children if hasattr(c, "values")]
+        # Only numeric column ("area") should be attached
+        assert len(children) == 1
+        # Per-vertex values: 4 vertices all from feature 0
+        np.testing.assert_array_almost_equal(
+            children[0].values, [1.0, 1.0, 1.0, 1.0]
+        )
+
+    def test_concave_polygon(self, workspace):
+        # L-shaped polygon: concave, should produce correct triangulation
+        gdf = gpd.GeoDataFrame(
+            {"id": [1.0]},
+            geometry=[
+                Polygon([(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)])
+            ],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="Concave")
+        assert surf is not None
+        assert len(surf.vertices) == 6
+        # All triangle cells should have 3 vertex indices
+        assert surf.cells.shape[1] == 3
+
+    def test_multipolygon(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"id": [1.0]},
+            geometry=[
+                MultiPolygon(
+                    [
+                        Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+                        Polygon([(2, 2), (3, 2), (3, 3), (2, 3)]),
+                    ]
+                )
+            ],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="Multi")
+        # Two squares: 4+4=8 vertices, 2+2=4 triangles
+        assert len(surf.vertices) == 8
+        assert surf.cells.shape == (4, 3)
+
+    def test_multiple_features(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"area": [1.0, 4.0]},
+            geometry=[
+                Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+                Polygon([(5, 5), (7, 5), (7, 7), (5, 7)]),
+            ],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="TwoPolys")
+        assert len(surf.vertices) == 8
+        assert surf.cells.shape == (4, 3)
+
+    def test_empty_raises(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"val": [1.0]}, geometry=[Point(0, 0)]
+        )
+        with pytest.raises(ValueError, match="No Polygon"):
+            geodataframe_to_surface(gdf, workspace)
