@@ -13,6 +13,10 @@ if TYPE_CHECKING:
     from geoh5py.objects import Curve, Points, Surface
     from geoh5py.workspace import Workspace
 
+# Decimal places used when rounding coordinates for vertex matching
+# during polygon triangulation.
+_COORD_PRECISION = 10
+
 
 def _is_numeric_column(gdf: gpd.GeoDataFrame, col: str) -> bool:
     """Check if a GeoDataFrame column has a numeric dtype."""
@@ -221,7 +225,8 @@ def _triangulate_polygon(polygon) -> tuple[np.ndarray, np.ndarray]:
     # Build a coordinate-to-index lookup (2D only for matching)
     coord_to_idx: dict[tuple[float, float], int] = {}
     for i in range(len(coords)):
-        key = (round(float(coords[i, 0]), 10), round(float(coords[i, 1]), 10))
+        key = (round(float(coords[i, 0]), _COORD_PRECISION),
+               round(float(coords[i, 1]), _COORD_PRECISION))
         coord_to_idx[key] = i
 
     triangles = triangulate(MultiPoint(coords.tolist()))
@@ -233,7 +238,8 @@ def _triangulate_polygon(polygon) -> tuple[np.ndarray, np.ndarray]:
         tri_coords = np.array(tri.exterior.coords[:-1])
         indices: list[int] = []
         for tc in tri_coords:
-            key = (round(float(tc[0]), 10), round(float(tc[1]), 10))
+            key = (round(float(tc[0]), _COORD_PRECISION),
+                   round(float(tc[1]), _COORD_PRECISION))
             if key in coord_to_idx:
                 indices.append(coord_to_idx[key])
             else:
@@ -241,7 +247,9 @@ def _triangulate_polygon(polygon) -> tuple[np.ndarray, np.ndarray]:
         if len(indices) == 3:
             cells.append(indices)
 
-    return coords, np.array(cells, dtype=np.uint32) if cells else np.empty((0, 3), dtype=np.uint32)
+    if cells:
+        return coords, np.array(cells, dtype=np.uint32)
+    return coords, np.empty((0, 3), dtype=np.uint32)
 
 
 def geodataframe_to_surface(
