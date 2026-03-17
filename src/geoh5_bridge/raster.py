@@ -207,3 +207,100 @@ def raster_to_points(
     _add_data_columns(pts, filtered)
 
     return pts
+
+
+def grid2d_to_raster(
+    grid: Grid2D,
+    *,
+    data_names: list[str] | None = None,
+) -> xr.DataArray:
+    """Convert a geoh5py Grid2D back to an xarray DataArray.
+
+    This is the inverse of :func:`raster_to_grid2d`.  Coordinate arrays
+    are reconstructed from the grid origin and cell sizes so that a
+    round-trip ``DataArray → Grid2D → DataArray`` preserves coordinate
+    values exactly.
+
+    Parameters
+    ----------
+    grid : geoh5py.objects.Grid2D
+        Grid2D object with at least one data channel.
+    data_names : list[str], optional
+        Names of data channels to include.  When *None* (default) all
+        data children that expose a ``values`` attribute are used.
+
+    Returns
+    -------
+    xarray.DataArray
+        2D ``(y, x)`` array when a single channel is present, or 3D
+        ``(band, y, x)`` when multiple channels are included.
+
+    Raises
+    ------
+    ValueError
+        If no data channels are found on *grid*.
+
+    Examples
+    --------
+    >>> from geoh5py.workspace import Workspace
+    >>> from geoh5_bridge import grid2d_to_raster
+    >>> ws = Workspace("input.geoh5")
+    >>> grid = ws.get_entity("MyGrid")[0]
+    >>> da = grid2d_to_raster(grid)
+    """
+    import xarray as xr
+
+    nx = grid.u_count
+    ny = grid.v_count
+
+    origin_x = float(grid.origin["x"])
+    origin_y = float(grid.origin["y"])
+    dx = float(grid.u_cell_size)
+    dy = float(grid.v_cell_size)
+
+    x_coords = origin_x + np.arange(nx) * dx
+    y_coords = origin_y + np.arange(ny) * dy
+
+    # Collect data children
+    children = {
+        c.name: c.values for c in grid.children if hasattr(c, "values")
+    }
+
+    if data_names is not None:
+        children = {k: v for k, v in children.items() if k in data_names}
+
+    if not children:
+        raise ValueError("No data channels found on the Grid2D object.")
+
+    expected = ny * nx
+    for ch_name, ch_vals in children.items():
+        if np.asarray(ch_vals).size != expected:
+            raise ValueError(
+                f"Data channel '{ch_name}' has {np.asarray(ch_vals).size} "
+                f"values, expected {expected} (ny={ny} × nx={nx})."
+            )
+
+    if len(children) == 1:
+        name, values = next(iter(children.items()))
+        data_2d = np.asarray(values, dtype=float).reshape(ny, nx)
+        return xr.DataArray(
+            data_2d,
+            dims=("y", "x"),
+            coords={"x": x_coords, "y": y_coords},
+            name=name,
+        )
+
+    band_names = list(children.keys())
+    data_3d = np.stack(
+        [
+            np.asarray(children[b], dtype=float).reshape(ny, nx)
+            for b in band_names
+        ],
+        axis=0,
+    )
+    return xr.DataArray(
+        data_3d,
+        dims=("band", "y", "x"),
+        coords={"band": band_names, "x": x_coords, "y": y_coords},
+        name="data",
+    )
