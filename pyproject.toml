@@ -43,8 +43,12 @@ grid3d = [
 pyvista = [
     "pyvista>=0.38",
 ]
+omf = [
+    "omf>=1.0",
+    "pyvista>=0.38",
+]
 all = [
-    "geoh5-bridge[raster,vector,grid3d,pyvista]",
+    "geoh5-bridge[raster,vector,grid3d,pyvista,omf]",
 ]
 dev = [
     "geoh5-bridge[all]",
