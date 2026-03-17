@@ -174,3 +174,67 @@ def _coords_to_delimiters(coords: np.ndarray) -> np.ndarray:
         [coords[-1] + half_last],
     ])
     return edges_abs - edges_abs[0]
+
+
+def blockmodel_to_xarray(
+    blockmodel: BlockModel,
+    *,
+    variables: list[str] | None = None,
+    dims: tuple[str, str, str] = ("x", "y", "z"),
+) -> xr.Dataset:
+    """Convert a geoh5py BlockModel to an xarray Dataset.
+
+    Inverse of :func:`xarray_to_blockmodel`.
+
+    Parameters
+    ----------
+    blockmodel : geoh5py.objects.BlockModel
+        BlockModel object with data channels.
+    variables : list[str], optional
+        Names of data channels to include. Default: all.
+    dims : tuple[str, str, str], optional
+        Dimension names for the x, y, z axes. Default: ("x", "y", "z").
+
+    Returns
+    -------
+    xarray.Dataset
+    """
+    import xarray as xr
+
+    x_dim, y_dim, z_dim = dims
+
+    # Reconstruct cell centers from delimiters + origin
+    origin_x = float(blockmodel.origin["x"])
+    origin_y = float(blockmodel.origin["y"])
+    origin_z = float(blockmodel.origin["z"])
+
+    u_delims = np.asarray(blockmodel.u_cell_delimiters, dtype=float)
+    v_delims = np.asarray(blockmodel.v_cell_delimiters, dtype=float)
+    z_delims = np.asarray(blockmodel.z_cell_delimiters, dtype=float)
+
+    # Cell centers = origin + (left_edge + right_edge) / 2
+    x_coords = origin_x + (u_delims[:-1] + u_delims[1:]) / 2.0
+    y_coords = origin_y + (v_delims[:-1] + v_delims[1:]) / 2.0
+    z_coords = origin_z + (z_delims[:-1] + z_delims[1:]) / 2.0
+
+    nx, ny, nz = blockmodel.shape
+
+    # Collect data children
+    children = {
+        c.name: c.values for c in blockmodel.children if hasattr(c, "values")
+    }
+    if variables is not None:
+        children = {k: v for k, v in children.items() if k in variables}
+
+    if not children:
+        raise ValueError("No data channels found on the BlockModel object.")
+
+    data_vars = {}
+    for name, values in children.items():
+        arr = np.asarray(values, dtype=float).reshape(nx, ny, nz)
+        data_vars[name] = ((x_dim, y_dim, z_dim), arr)
+
+    return xr.Dataset(
+        data_vars,
+        coords={x_dim: x_coords, y_dim: y_coords, z_dim: z_coords},
+    )

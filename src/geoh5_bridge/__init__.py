@@ -9,7 +9,7 @@ from geoh5_bridge.vector import (
     curve_to_geodataframe,
     surface_to_geodataframe,
 )
-from geoh5_bridge.grid3d import xarray_to_blockmodel
+from geoh5_bridge.grid3d import blockmodel_to_xarray, xarray_to_blockmodel
 
 __all__ = [
     "grid2d_to_raster",
@@ -21,6 +21,7 @@ __all__ = [
     "points_to_geodataframe",
     "curve_to_geodataframe",
     "surface_to_geodataframe",
+    "blockmodel_to_xarray",
     "xarray_to_blockmodel",
 ]
 
