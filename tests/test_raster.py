@@ -7,7 +7,7 @@ import pytest
 import xarray as xr
 from geoh5py.workspace import Workspace
 
-from geoh5_bridge.raster import raster_to_grid2d, raster_to_points
+from geoh5_bridge.raster import grid2d_to_raster, raster_to_grid2d, raster_to_points
 
 
 @pytest.fixture()
@@ -110,3 +110,60 @@ class TestRasterToPoints:
         )
         assert pts is not None
         assert len(pts.vertices) == 12  # 4x3 grid, no nodata
+
+
+class TestGrid2dToRaster:
+    def test_basic_roundtrip(self, workspace):
+        """Round-trip: DataArray → Grid2D → DataArray preserves coords."""
+        x = np.arange(0, 5, dtype=float)
+        y = np.arange(0, 4, dtype=float)
+        data = np.arange(20, dtype=float).reshape(4, 5)
+        da = xr.DataArray(data, dims=("y", "x"), coords={"x": x, "y": y})
+
+        grid = raster_to_grid2d(da, workspace, name="RT")
+        result = grid2d_to_raster(grid)
+
+        np.testing.assert_array_almost_equal(result["x"].values, x)
+        np.testing.assert_array_almost_equal(result["y"].values, y)
+
+    def test_data_values_preserved(self, workspace):
+        """Values survive the round-trip."""
+        x = np.arange(0, 3, dtype=float)
+        y = np.arange(0, 2, dtype=float)
+        data = np.array([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]])
+        da = xr.DataArray(data, dims=("y", "x"), coords={"x": x, "y": y})
+
+        grid = raster_to_grid2d(da, workspace, name="Vals")
+        result = grid2d_to_raster(grid)
+
+        np.testing.assert_array_almost_equal(result.values, data, decimal=4)
+
+    def test_multiband_roundtrip(self, workspace, multiband_raster):
+        """Multi-band raster round-trips with band dimension."""
+        grid = raster_to_grid2d(multiband_raster, workspace, name="MB")
+        result = grid2d_to_raster(grid)
+
+        assert "band" in result.dims
+        assert result.shape[0] == 2  # 2 bands
+
+    def test_data_names_filter(self, workspace):
+        """Selecting specific data channels works."""
+        x = np.arange(0, 3, dtype=float)
+        y = np.arange(0, 2, dtype=float)
+        da = xr.DataArray(
+            np.ones((2, 3)), dims=("y", "x"), coords={"x": x, "y": y}
+        )
+        grid = raster_to_grid2d(da, workspace, name="Filter")
+        result = grid2d_to_raster(grid, data_names=["Filter"])
+        assert result.name == "Filter"
+
+    def test_no_data_raises(self, workspace):
+        """Requesting non-existent channels raises ValueError."""
+        x = np.arange(0, 3, dtype=float)
+        y = np.arange(0, 2, dtype=float)
+        da = xr.DataArray(
+            np.ones((2, 3)), dims=("y", "x"), coords={"x": x, "y": y}
+        )
+        grid = raster_to_grid2d(da, workspace, name="NoData")
+        with pytest.raises(ValueError, match="No data channels"):
+            grid2d_to_raster(grid, data_names=["nonexistent"])
