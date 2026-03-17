@@ -40,8 +40,15 @@ grid3d = [
     "xarray>=2023.1",
     "netcdf4>=1.6",
 ]
+pyvista = [
+    "pyvista>=0.38",
+]
+omf = [
+    "omf>=1.0",
+    "pyvista>=0.38",
+]
 all = [
-    "geoh5-bridge[raster,vector,grid3d]",
+    "geoh5-bridge[raster,vector,grid3d,pyvista,omf]",
 ]
 dev = [
     "geoh5-bridge[all]",

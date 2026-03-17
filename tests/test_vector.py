@@ -9,9 +9,12 @@ from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, P
 from geoh5py.workspace import Workspace
 
 from geoh5_bridge.vector import (
+    curve_to_geodataframe,
     geodataframe_to_curve,
     geodataframe_to_points,
     geodataframe_to_surface,
+    points_to_geodataframe,
+    surface_to_geodataframe,
 )
 
 
@@ -208,3 +211,149 @@ class TestGeoDataFrameToSurface:
         )
         with pytest.raises(ValueError, match="No Polygon"):
             geodataframe_to_surface(gdf, workspace)
+
+
+class TestPointsToGeoDataFrame:
+    def test_basic_roundtrip(self, workspace, point_gdf):
+        pts = geodataframe_to_points(point_gdf, workspace, name="RTPts")
+        result = points_to_geodataframe(pts)
+        assert len(result) == 3
+        for geom in result.geometry:
+            assert geom.geom_type == "Point"
+
+    def test_vertices_preserved(self, workspace, point_gdf):
+        pts = geodataframe_to_points(point_gdf, workspace, name="RTPts")
+        result = points_to_geodataframe(pts)
+        xs = [g.x for g in result.geometry]
+        ys = [g.y for g in result.geometry]
+        np.testing.assert_array_almost_equal(xs, [0, 1, 2])
+        np.testing.assert_array_almost_equal(ys, [0, 1, 2])
+
+    def test_3d_preserved(self, workspace, point_3d_gdf):
+        pts = geodataframe_to_points(
+            point_3d_gdf, workspace, name="RT3D"
+        )
+        result = points_to_geodataframe(pts)
+        zs = [g.z for g in result.geometry]
+        np.testing.assert_array_almost_equal(zs, [10, 20])
+
+    def test_data_roundtrip(self, workspace, point_gdf):
+        pts = geodataframe_to_points(point_gdf, workspace, name="RTData")
+        result = points_to_geodataframe(pts)
+        assert "value" in result.columns
+        np.testing.assert_array_almost_equal(
+            result["value"].values, [10.0, 20.0, 30.0]
+        )
+
+    def test_data_names_filter(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"a": [1.0], "b": [2.0]},
+            geometry=[Point(0, 0)],
+        )
+        pts = geodataframe_to_points(gdf, workspace, name="Filter")
+        result = points_to_geodataframe(pts, data_names=["a"])
+        assert "a" in result.columns
+        assert "b" not in result.columns
+
+
+class TestCurveToGeoDataFrame:
+    def test_basic_roundtrip(self, workspace, line_gdf):
+        curve = geodataframe_to_curve(
+            line_gdf, workspace, name="RTCurve"
+        )
+        result = curve_to_geodataframe(curve)
+        assert len(result) == 2
+        for geom in result.geometry:
+            assert geom.geom_type == "LineString"
+
+    def test_vertex_counts(self, workspace, line_gdf):
+        curve = geodataframe_to_curve(
+            line_gdf, workspace, name="RTCurve"
+        )
+        result = curve_to_geodataframe(curve)
+        # First line has 3 vertices, second has 2
+        assert len(result.geometry.iloc[0].coords) == 3
+        assert len(result.geometry.iloc[1].coords) == 2
+
+    def test_data_roundtrip(self, workspace, line_gdf):
+        curve = geodataframe_to_curve(
+            line_gdf, workspace, name="RTCurve"
+        )
+        result = curve_to_geodataframe(curve)
+        assert "speed" in result.columns
+        # First vertex of each line carries the feature value
+        np.testing.assert_array_almost_equal(
+            result["speed"].values, [50.0, 80.0]
+        )
+
+    def test_multilinestring(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"id": [1.0]},
+            geometry=[
+                MultiLineString(
+                    [[(0, 0), (1, 1)], [(2, 2), (3, 3), (4, 4)]]
+                )
+            ],
+        )
+        curve = geodataframe_to_curve(gdf, workspace, name="RTMulti")
+        result = curve_to_geodataframe(curve)
+        # Two disconnected lines
+        assert len(result) == 2
+
+    def test_data_names_filter(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"a": [1.0], "b": [2.0]},
+            geometry=[LineString([(0, 0), (1, 1)])],
+        )
+        curve = geodataframe_to_curve(gdf, workspace, name="Filter")
+        result = curve_to_geodataframe(curve, data_names=["a"])
+        assert "a" in result.columns
+        assert "b" not in result.columns
+
+
+class TestSurfaceToGeoDataFrame:
+    def test_basic_roundtrip(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"area": [1.0]},
+            geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="RTSurf")
+        result = surface_to_geodataframe(surf)
+        assert len(result) == 1
+        geom = result.geometry.iloc[0]
+        assert geom.geom_type in ("Polygon", "MultiPolygon")
+
+    def test_data_roundtrip(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"area": [1.0]},
+            geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="RTSurf")
+        result = surface_to_geodataframe(surf)
+        assert "area" in result.columns
+        np.testing.assert_array_almost_equal(
+            result["area"].values, [1.0]
+        )
+
+    def test_two_separate_polygons(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"area": [1.0, 4.0]},
+            geometry=[
+                Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+                Polygon([(10, 10), (12, 10), (12, 12), (10, 12)]),
+            ],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="RTTwo")
+        result = surface_to_geodataframe(surf)
+        # Two disconnected components should produce two features
+        assert len(result) == 2
+
+    def test_data_names_filter(self, workspace):
+        gdf = gpd.GeoDataFrame(
+            {"a": [1.0], "b": [2.0]},
+            geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])],
+        )
+        surf = geodataframe_to_surface(gdf, workspace, name="Filter")
+        result = surface_to_geodataframe(surf, data_names=["a"])
+        assert "a" in result.columns
+        assert "b" not in result.columns

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from geoh5_bridge.utils import _add_data_columns
+from geoh5_bridge.utils import _add_data_columns, _reconstruct_polylines
 
 if TYPE_CHECKING:
     import geopandas as gpd
@@ -351,3 +351,240 @@ def geodataframe_to_surface(
         _add_data_columns(surface, data)
 
     return surface
+
+
+def points_to_geodataframe(
+    pts: Points,
+    *,
+    data_names: list[str] | None = None,
+) -> gpd.GeoDataFrame:
+    """Convert a geoh5py Points object to a GeoDataFrame.
+
+    Parameters
+    ----------
+    pts : geoh5py.objects.Points
+        Points object with vertices and optional data children.
+    data_names : list[str], optional
+        Names of data children to include as columns.  If ``None``,
+        all data children with a ``values`` attribute are included.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+
+    Examples
+    --------
+    >>> from geoh5py.workspace import Workspace
+    >>> from geoh5_bridge import points_to_geodataframe
+    >>> ws = Workspace("input.geoh5")
+    >>> pts = ws.get_entity("SamplePoints")[0]
+    >>> gdf = points_to_geodataframe(pts)
+    """
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    vertices = pts.vertices
+    geometry = [Point(v[0], v[1], v[2]) for v in vertices]
+
+    children = {
+        c.name: c.values
+        for c in pts.children
+        if hasattr(c, "values")
+    }
+    if data_names is not None:
+        children = {
+            k: v for k, v in children.items() if k in data_names
+        }
+
+    data = {
+        name: np.asarray(values, dtype=float)
+        for name, values in children.items()
+    }
+
+    return gpd.GeoDataFrame(data, geometry=geometry)
+
+
+def curve_to_geodataframe(
+    curve: Curve,
+    *,
+    data_names: list[str] | None = None,
+) -> gpd.GeoDataFrame:
+    """Convert a geoh5py Curve object to a GeoDataFrame.
+
+    Each connected polyline in the Curve becomes a single
+    ``LineString`` feature in the resulting GeoDataFrame.
+    Per-vertex data is reduced to per-feature by taking the value
+    at the first vertex of each polyline.
+
+    Parameters
+    ----------
+    curve : geoh5py.objects.Curve
+        Curve object with vertices, cells and optional data children.
+    data_names : list[str], optional
+        Names of data children to include as columns.  If ``None``,
+        all data children with a ``values`` attribute are included.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+
+    Examples
+    --------
+    >>> from geoh5py.workspace import Workspace
+    >>> from geoh5_bridge import curve_to_geodataframe
+    >>> ws = Workspace("input.geoh5")
+    >>> curve = ws.get_entity("Roads")[0]
+    >>> gdf = curve_to_geodataframe(curve)
+    """
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    vertices = curve.vertices
+    cells = curve.cells
+
+    if cells is None or len(cells) == 0:
+        return gpd.GeoDataFrame(geometry=[])
+
+    # Reconstruct polylines from edge cells
+    lines = _reconstruct_polylines(cells)
+
+    geometry = [LineString(vertices[indices]) for indices in lines]
+
+    # Collect per-vertex data children
+    children = {
+        c.name: c.values
+        for c in curve.children
+        if hasattr(c, "values")
+    }
+    if data_names is not None:
+        children = {
+            k: v for k, v in children.items() if k in data_names
+        }
+
+    # Reduce to per-feature using the first vertex of each line
+    data: dict[str, list[float]] = {}
+    for name, values in children.items():
+        vals = np.asarray(values, dtype=float)
+        data[name] = [float(vals[indices[0]]) for indices in lines]
+
+    return gpd.GeoDataFrame(data, geometry=geometry)
+
+
+def surface_to_geodataframe(
+    surface: Surface,
+    *,
+    data_names: list[str] | None = None,
+) -> gpd.GeoDataFrame:
+    """Convert a geoh5py Surface object to a GeoDataFrame.
+
+    Connected groups of triangles are merged into Polygon features
+    using :func:`shapely.ops.unary_union`.  Per-vertex data is
+    averaged over the vertices of each connected component.
+
+    Parameters
+    ----------
+    surface : geoh5py.objects.Surface
+        Surface object with vertices, triangle cells and optional
+        data children.
+    data_names : list[str], optional
+        Names of data children to include as columns.  If ``None``,
+        all data children with a ``values`` attribute are included.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+
+    Examples
+    --------
+    >>> from geoh5py.workspace import Workspace
+    >>> from geoh5_bridge import surface_to_geodataframe
+    >>> ws = Workspace("input.geoh5")
+    >>> surface = ws.get_entity("Parcels")[0]
+    >>> gdf = surface_to_geodataframe(surface)
+    """
+    from collections import defaultdict
+
+    import geopandas as gpd
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    vertices = surface.vertices
+    cells = surface.cells
+
+    # Build triangle adjacency via shared edges
+    vertex_to_tris: dict[int, set[int]] = defaultdict(set)
+    for i, tri in enumerate(cells):
+        for v in tri:
+            vertex_to_tris[int(v)].add(i)
+
+    tri_adj: dict[int, set[int]] = defaultdict(set)
+    for i, tri in enumerate(cells):
+        edges = [
+            (int(tri[0]), int(tri[1])),
+            (int(tri[1]), int(tri[2])),
+            (int(tri[0]), int(tri[2])),
+        ]
+        for e in edges:
+            edge_key = (min(e), max(e))
+            neighbours = (
+                vertex_to_tris[edge_key[0]]
+                & vertex_to_tris[edge_key[1]]
+            )
+            for j in neighbours:
+                if j != i:
+                    tri_adj[i].add(j)
+
+    # BFS to find connected components of triangles
+    visited: set[int] = set()
+    components: list[set[int]] = []
+    for i in range(len(cells)):
+        if i in visited:
+            continue
+        component: set[int] = set()
+        queue = [i]
+        while queue:
+            t = queue.pop()
+            if t in visited:
+                continue
+            visited.add(t)
+            component.add(t)
+            queue.extend(tri_adj[t] - visited)
+        components.append(component)
+
+    # Merge triangles per component into polygons
+    geometry = []
+    component_vertex_sets: list[set[int]] = []
+    for component in components:
+        triangles = []
+        vert_set: set[int] = set()
+        for tri_idx in component:
+            tri = cells[tri_idx]
+            coords_2d = vertices[tri, :2]
+            triangles.append(Polygon(coords_2d))
+            for v in tri:
+                vert_set.add(int(v))
+        geometry.append(unary_union(triangles))
+        component_vertex_sets.append(vert_set)
+
+    # Collect data children
+    children = {
+        c.name: c.values
+        for c in surface.children
+        if hasattr(c, "values")
+    }
+    if data_names is not None:
+        children = {
+            k: v for k, v in children.items() if k in data_names
+        }
+
+    # Average per-vertex data over each component
+    data: dict[str, list[float]] = {}
+    for name, values in children.items():
+        vals = np.asarray(values, dtype=float)
+        feature_vals: list[float] = []
+        for vert_set in component_vertex_sets:
+            indices = np.array(sorted(vert_set))
+            feature_vals.append(float(np.nanmean(vals[indices])))
+        data[name] = feature_vals
+
+    return gpd.GeoDataFrame(data, geometry=geometry)
