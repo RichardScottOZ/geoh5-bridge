@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from geoh5_bridge.utils import _add_data_columns
+from geoh5_bridge.utils import _add_data_columns, _reconstruct_polylines
 
 if TYPE_CHECKING:
     import pyvista as pv
@@ -253,16 +253,8 @@ def curve_to_pyvista(
     vertices = np.asarray(curve.vertices, dtype=float)
     cells = curve.cells
 
-    # Reconstruct polylines from edge cells (same as curve_to_geodataframe)
-    lines_idx: list[list[int]] = []
-    current_line = [int(cells[0][0]), int(cells[0][1])]
-    for i in range(1, len(cells)):
-        if cells[i][0] == cells[i - 1][1]:
-            current_line.append(int(cells[i][1]))
-        else:
-            lines_idx.append(current_line)
-            current_line = [int(cells[i][0]), int(cells[i][1])]
-    lines_idx.append(current_line)
+    # Reconstruct polylines from edge cells
+    lines_idx = _reconstruct_polylines(cells)
 
     # Build PyVista lines array: [n, idx0, idx1, ..., n, idx0, ...]
     pv_lines: list[int] = []

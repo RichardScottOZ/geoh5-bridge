@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from geoh5_bridge.utils import _add_data_columns
+from geoh5_bridge.utils import _add_data_columns, _reconstruct_polylines
 
 if TYPE_CHECKING:
     import geopandas as gpd
@@ -446,15 +446,7 @@ def curve_to_geodataframe(
         return gpd.GeoDataFrame(geometry=[])
 
     # Reconstruct polylines from edge cells
-    lines: list[list[int]] = []
-    current_line = [int(cells[0][0]), int(cells[0][1])]
-    for i in range(1, len(cells)):
-        if cells[i][0] == cells[i - 1][1]:
-            current_line.append(int(cells[i][1]))
-        else:
-            lines.append(current_line)
-            current_line = [int(cells[i][0]), int(cells[i][1])]
-    lines.append(current_line)
+    lines = _reconstruct_polylines(cells)
 
     geometry = [LineString(vertices[indices]) for indices in lines]
 
@@ -591,7 +583,7 @@ def surface_to_geodataframe(
         vals = np.asarray(values, dtype=float)
         feature_vals: list[float] = []
         for vert_set in component_vertex_sets:
-            indices = list(vert_set)
+            indices = np.array(sorted(vert_set))
             feature_vals.append(float(np.nanmean(vals[indices])))
         data[name] = feature_vals
 
