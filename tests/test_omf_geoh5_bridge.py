@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import omf
 import pytest
-from geoh5py.objects import BlockModel, Curve, Points, Surface
+from geoh5py.objects import BlockModel, Curve, Grid2D, Points, Surface
 from geoh5py.workspace import Workspace
 
 from geoh5_bridge import (
@@ -17,8 +17,10 @@ from geoh5_bridge import (
 from geoh5_bridge.omf_geoh5_bridge import (
     blockmodel_to_omf_volume,
     curve_to_omf_lineset,
+    grid2d_to_omf_surface,
     omf_lineset_to_curve,
     omf_pointset_to_points,
+    omf_surface_to_grid2d,
     omf_surface_to_surface,
     omf_volume_to_blockmodel,
     points_to_omf_pointset,
@@ -335,7 +337,7 @@ class TestOmfSurfaceToSurface:
         assert "value" in children
 
     def test_grid_surface_basic(self, workspace):
-        """SurfaceGridGeometry should be triangulated automatically."""
+        """SurfaceGridGeometry with uniform spacing → Grid2D by default."""
         grid_surf = omf.SurfaceElement(
             name="GridSurf",
             geometry=omf.SurfaceGridGeometry(
@@ -346,12 +348,32 @@ class TestOmfSurfaceToSurface:
                 axis_v=[0.0, 1.0, 0.0],
             ),
         )
-        surf = omf_surface_to_surface(grid_surf, workspace)
+        result = omf_surface_to_surface(grid_surf, workspace)
+        # With prefer_grid2d=True (default), uniform grid → Grid2D
+        assert isinstance(result, Grid2D)
+        assert result.name == "GridSurf"
+        # 2 u-cells × 1 v-cell
+        assert result.u_count == 2
+        assert result.v_count == 1
+
+    def test_grid_surface_basic_triangulated(self, workspace):
+        """SurfaceGridGeometry with prefer_grid2d=False → triangulated Surface."""
+        grid_surf = omf.SurfaceElement(
+            name="GridSurf",
+            geometry=omf.SurfaceGridGeometry(
+                origin=[0.0, 0.0, 0.0],
+                tensor_u=np.array([1.0, 1.0]),
+                tensor_v=np.array([1.0]),
+                axis_u=[1.0, 0.0, 0.0],
+                axis_v=[0.0, 1.0, 0.0],
+            ),
+        )
+        surf = omf_surface_to_surface(grid_surf, workspace, prefer_grid2d=False)
+        assert isinstance(surf, Surface)
         # 3 u-nodes × 2 v-nodes = 6 vertices
         assert len(surf.vertices) == 6
         # 2 u-cells × 1 v-cell × 2 triangles = 4 triangles
         assert surf.cells.shape == (4, 3)
-        assert surf.name == "GridSurf"
 
     def test_grid_surface_with_data(self, workspace):
         """SurfaceGridGeometry with vertex data."""
@@ -430,6 +452,225 @@ class TestSurfaceToOmfSurface:
 
 
 # ==================================================================
+# SurfaceGridGeometry ↔ Grid2D
+# ==================================================================
+
+
+@pytest.fixture()
+def omf_grid_surface():
+    return omf.SurfaceElement(
+        name="GridSurf",
+        geometry=omf.SurfaceGridGeometry(
+            origin=[1.0, 2.0, 0.0],
+            tensor_u=np.array([1.0, 1.0, 1.0]),
+            tensor_v=np.array([2.0, 2.0]),
+            axis_u=[1.0, 0.0, 0.0],
+            axis_v=[0.0, 1.0, 0.0],
+        ),
+        data=[
+            omf.ScalarData(
+                name="elev",
+                array=np.arange(6, dtype=float),
+                location="cells",
+            )
+        ],
+    )
+
+
+class TestOmfSurfaceToGrid2D:
+    def test_returns_grid2d(self, workspace, omf_grid_surface):
+        result = omf_surface_to_grid2d(omf_grid_surface, workspace)
+        assert isinstance(result, Grid2D)
+
+    def test_shape(self, workspace, omf_grid_surface):
+        result = omf_surface_to_grid2d(omf_grid_surface, workspace)
+        # tensor_u has 3 cells, tensor_v has 2 cells
+        assert result.u_count == 3
+        assert result.v_count == 2
+
+    def test_cell_size(self, workspace, omf_grid_surface):
+        result = omf_surface_to_grid2d(omf_grid_surface, workspace)
+        assert result.u_cell_size == pytest.approx(1.0)
+        assert result.v_cell_size == pytest.approx(2.0)
+
+    def test_origin(self, workspace, omf_grid_surface):
+        result = omf_surface_to_grid2d(omf_grid_surface, workspace)
+        assert float(result.origin["x"]) == pytest.approx(1.0)
+        assert float(result.origin["y"]) == pytest.approx(2.0)
+        assert float(result.origin["z"]) == pytest.approx(0.0)
+
+    def test_rotation(self, workspace, omf_grid_surface):
+        result = omf_surface_to_grid2d(omf_grid_surface, workspace)
+        assert result.rotation == pytest.approx(0.0)
+
+    def test_name_inherited(self, workspace, omf_grid_surface):
+        result = omf_surface_to_grid2d(omf_grid_surface, workspace)
+        assert result.name == "GridSurf"
+
+    def test_name_override(self, workspace, omf_grid_surface):
+        result = omf_surface_to_grid2d(omf_grid_surface, workspace, name="Custom")
+        assert result.name == "Custom"
+
+    def test_data_attached(self, workspace, omf_grid_surface):
+        result = omf_surface_to_grid2d(omf_grid_surface, workspace)
+        names = [c.name for c in result.children if hasattr(c, "values")]
+        assert "elev" in names
+
+    def test_non_grid_raises_type_error(self, workspace, omf_surface):
+        """SurfaceGeometry (not a grid) should raise TypeError."""
+        with pytest.raises(TypeError, match="SurfaceGridGeometry"):
+            omf_surface_to_grid2d(omf_surface, workspace)
+
+    def test_non_uniform_u_raises(self, workspace):
+        surf = omf.SurfaceElement(
+            name="NonUniform",
+            geometry=omf.SurfaceGridGeometry(
+                origin=[0, 0, 0],
+                tensor_u=np.array([1.0, 2.0]),  # non-uniform
+                tensor_v=np.array([1.0]),
+                axis_u=[1, 0, 0],
+                axis_v=[0, 1, 0],
+            ),
+        )
+        with pytest.raises(ValueError, match="uniform"):
+            omf_surface_to_grid2d(surf, workspace)
+
+    def test_offset_w_raises(self, workspace):
+        surf = omf.SurfaceElement(
+            name="WithOffset",
+            geometry=omf.SurfaceGridGeometry(
+                origin=[0, 0, 0],
+                tensor_u=np.array([1.0, 1.0]),
+                tensor_v=np.array([1.0]),
+                axis_u=[1, 0, 0],
+                axis_v=[0, 1, 0],
+                offset_w=np.array([0.0, 0.1, 0.2, 0.0, 0.1, 0.2]),
+            ),
+        )
+        with pytest.raises(ValueError, match="offset_w"):
+            omf_surface_to_grid2d(surf, workspace)
+
+    def test_prefer_grid2d_default_returns_grid2d(self, workspace, omf_grid_surface):
+        """omf_surface_to_surface prefer_grid2d=True (default) → Grid2D."""
+        result = omf_surface_to_surface(omf_grid_surface, workspace)
+        assert isinstance(result, Grid2D)
+
+    def test_prefer_grid2d_false_returns_surface(self, workspace, omf_grid_surface):
+        """omf_surface_to_surface prefer_grid2d=False → triangulated Surface."""
+        result = omf_surface_to_surface(omf_grid_surface, workspace, prefer_grid2d=False)
+        assert isinstance(result, Surface)
+
+    def test_prefer_grid2d_with_offset_falls_back(self, workspace):
+        """Offset-w grid with prefer_grid2d=True falls back to Surface."""
+        surf = omf.SurfaceElement(
+            name="WithOffset",
+            geometry=omf.SurfaceGridGeometry(
+                origin=[0, 0, 0],
+                tensor_u=np.array([1.0, 1.0]),
+                tensor_v=np.array([1.0]),
+                axis_u=[1, 0, 0],
+                axis_v=[0, 1, 0],
+                offset_w=np.array([0.0, 0.5, 1.0, 0.0, 0.5, 1.0]),
+            ),
+        )
+        # prefer_grid2d=True but has offset_w → falls back to Surface
+        result = omf_surface_to_surface(surf, workspace)
+        assert isinstance(result, Surface)
+
+    def test_rotated_grid(self, workspace):
+        """SurfaceGridGeometry with 45° rotation."""
+        import math
+        surf = omf.SurfaceElement(
+            name="Rotated",
+            geometry=omf.SurfaceGridGeometry(
+                origin=[0, 0, 0],
+                tensor_u=np.array([1.0, 1.0]),
+                tensor_v=np.array([1.0]),
+                axis_u=[math.cos(math.radians(45)), math.sin(math.radians(45)), 0.0],
+                axis_v=[-math.sin(math.radians(45)), math.cos(math.radians(45)), 0.0],
+            ),
+        )
+        result = omf_surface_to_grid2d(surf, workspace)
+        assert isinstance(result, Grid2D)
+        assert result.rotation == pytest.approx(45.0, abs=1e-4)
+
+
+class TestGrid2DToOmfSurface:
+    @pytest.fixture()
+    def sample_grid2d(self, workspace):
+        g = Grid2D.create(
+            workspace,
+            origin=[1.0, 2.0, 3.0],
+            u_cell_size=1.0,
+            v_cell_size=2.0,
+            u_count=3,
+            v_count=2,
+            rotation=0.0,
+            dip=0.0,
+            name="SampleGrid",
+        )
+        g.add_data({"elevation": {"values": np.arange(6, dtype=np.float32)}})
+        return g
+
+    def test_returns_surface_element(self, sample_grid2d):
+        elem = grid2d_to_omf_surface(sample_grid2d)
+        import omf as _omf
+        assert isinstance(elem, _omf.SurfaceElement)
+
+    def test_geometry_type(self, sample_grid2d):
+        elem = grid2d_to_omf_surface(sample_grid2d)
+        import omf as _omf
+        assert isinstance(elem.geometry, _omf.SurfaceGridGeometry)
+
+    def test_tensor_u(self, sample_grid2d):
+        elem = grid2d_to_omf_surface(sample_grid2d)
+        tu = np.asarray(elem.geometry.tensor_u)
+        assert len(tu) == 3
+        np.testing.assert_array_almost_equal(tu, [1.0, 1.0, 1.0])
+
+    def test_tensor_v(self, sample_grid2d):
+        elem = grid2d_to_omf_surface(sample_grid2d)
+        tv = np.asarray(elem.geometry.tensor_v)
+        assert len(tv) == 2
+        np.testing.assert_array_almost_equal(tv, [2.0, 2.0])
+
+    def test_origin(self, sample_grid2d):
+        elem = grid2d_to_omf_surface(sample_grid2d)
+        np.testing.assert_array_almost_equal(elem.geometry.origin, [1.0, 2.0, 3.0])
+
+    def test_name_inherited(self, sample_grid2d):
+        elem = grid2d_to_omf_surface(sample_grid2d)
+        assert elem.name == "SampleGrid"
+
+    def test_data_attached(self, sample_grid2d):
+        elem = grid2d_to_omf_surface(sample_grid2d)
+        assert len(elem.data) >= 1
+        names = [d.name for d in elem.data]
+        assert "elevation" in names
+
+    def test_roundtrip(self, workspace):
+        """OMF SurfaceGridGeometry → Grid2D → OMF SurfaceGridGeometry preserves shape."""
+        orig = omf.SurfaceElement(
+            name="RT",
+            geometry=omf.SurfaceGridGeometry(
+                origin=[0.0, 0.0, 0.0],
+                tensor_u=np.array([2.0, 2.0]),
+                tensor_v=np.array([3.0, 3.0, 3.0]),
+                axis_u=[1.0, 0.0, 0.0],
+                axis_v=[0.0, 1.0, 0.0],
+            ),
+        )
+        grid = omf_surface_to_grid2d(orig, workspace)
+        back = grid2d_to_omf_surface(grid)
+        np.testing.assert_array_almost_equal(
+            np.asarray(back.geometry.tensor_u), [2.0, 2.0]
+        )
+        np.testing.assert_array_almost_equal(
+            np.asarray(back.geometry.tensor_v), [3.0, 3.0, 3.0]
+        )
+
+
+# ==================================================================
 # Volume ↔ BlockModel
 # ==================================================================
 
@@ -503,6 +744,163 @@ class TestBlockmodelToOmfVolume:
             np.asarray(omf_volume.data[0].array),
             decimal=4,
         )
+
+
+# ==================================================================
+# Extended data-type tests (OMF ↔ geoh5)
+# ==================================================================
+
+
+class TestOmfExtendedDataTypes:
+    """Test that non-scalar OMF data types survive OMF → geoh5 conversion."""
+
+    def test_string_data_omf_to_geoh5(self, workspace):
+        """StringData → geoh5 TextData."""
+        from geoh5py.data import TextData
+
+        elem = omf.PointSetElement(
+            name="P",
+            geometry=omf.PointSetGeometry(
+                vertices=np.array([[0, 0, 0], [1, 1, 1], [2, 2, 2]], dtype=float)
+            ),
+            data=[
+                omf.StringData(
+                    name="rock_type",
+                    array=["granite", "basalt", "granite"],
+                    location="vertices",
+                )
+            ],
+        )
+        pts = omf_pointset_to_points(elem, workspace)
+        children = {c.name: c for c in pts.children if hasattr(c, "values")}
+        assert "rock_type" in children
+        assert isinstance(children["rock_type"], TextData)
+        assert list(children["rock_type"].values) == ["granite", "basalt", "granite"]
+
+    def test_integer_data_omf_to_geoh5(self, workspace):
+        """ScalarData with integer array → geoh5 IntegerData."""
+        from geoh5py.data import IntegerData
+
+        elem = omf.PointSetElement(
+            name="P",
+            geometry=omf.PointSetGeometry(
+                vertices=np.array([[0, 0, 0], [1, 1, 1]], dtype=float)
+            ),
+            data=[
+                omf.ScalarData(
+                    name="id",
+                    array=np.array([1, 2], dtype=np.int32),
+                    location="vertices",
+                )
+            ],
+        )
+        pts = omf_pointset_to_points(elem, workspace)
+        children = {c.name: c for c in pts.children if hasattr(c, "values")}
+        assert "id" in children
+        assert isinstance(children["id"], IntegerData)
+
+    def test_vector3_data_omf_to_geoh5(self, workspace):
+        """Vector3Data → three component FloatData channels."""
+        from geoh5py.data import FloatData
+
+        elem = omf.PointSetElement(
+            name="P",
+            geometry=omf.PointSetGeometry(
+                vertices=np.array([[0, 0, 0], [1, 1, 1]], dtype=float)
+            ),
+            data=[
+                omf.Vector3Data(
+                    name="velocity",
+                    array=np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+                    location="vertices",
+                )
+            ],
+        )
+        pts = omf_pointset_to_points(elem, workspace)
+        children = {c.name: c for c in pts.children if hasattr(c, "values")}
+        for suffix in ("_x", "_y", "_z"):
+            assert "velocity" + suffix in children
+            assert isinstance(children["velocity" + suffix], FloatData)
+        np.testing.assert_array_almost_equal(
+            children["velocity_x"].values, [1.0, 4.0], decimal=4
+        )
+
+    def test_mapped_data_omf_to_geoh5(self, workspace):
+        """MappedData → geoh5 ReferencedData with value_map."""
+        from geoh5py.data import ReferencedData
+
+        leg = omf.Legend(values=["rock", "soil", "sand"])
+        elem = omf.PointSetElement(
+            name="P",
+            geometry=omf.PointSetGeometry(
+                vertices=np.array([[0, 0, 0], [1, 1, 1], [2, 2, 2]], dtype=float)
+            ),
+            data=[
+                omf.MappedData(
+                    name="lithology",
+                    array=np.array([0, 1, 2]),
+                    location="vertices",
+                    legends=[leg],
+                )
+            ],
+        )
+        pts = omf_pointset_to_points(elem, workspace)
+        children = {c.name: c for c in pts.children if hasattr(c, "values")}
+        assert "lithology" in children
+        assert isinstance(children["lithology"], ReferencedData)
+        vm = children["lithology"].entity_type.value_map.map
+        labels = {int(k): (v.decode() if isinstance(v, bytes) else v) for k, v in vm if int(k) != 0}
+        assert labels[1] == "rock"
+        assert labels[2] == "soil"
+        assert labels[3] == "sand"
+
+
+class TestGeoh5ExtendedDataTypesRoundtrip:
+    """Test that non-float geoh5 data types round-trip back to OMF."""
+
+    def test_text_data_roundtrip(self, workspace):
+        """TextData → OMF StringData."""
+        from geoh5py.objects import Points
+
+        pts = Points.create(
+            workspace,
+            vertices=np.array([[0, 0, 0], [1, 1, 1]], dtype=float),
+            name="P",
+        )
+        pts.add_data({"label": {"values": np.array(["a", "b"])}})
+        elem = points_to_omf_pointset(pts)
+        types = {d.name: type(d).__name__ for d in elem.data}
+        assert "label" in types
+        assert types["label"] == "StringData"
+        assert list(elem.data[0].array) == ["a", "b"]
+
+    def test_referenced_data_roundtrip(self, workspace):
+        """ReferencedData → OMF MappedData."""
+        from geoh5py.objects import Points
+
+        pts = Points.create(
+            workspace,
+            vertices=np.array([[0, 0, 0], [1, 1, 1], [2, 2, 2]], dtype=float),
+            name="P",
+        )
+        pts.add_data(
+            {
+                "lith": {
+                    "type": "referenced",
+                    "values": np.array([1, 2, 1], dtype=np.int32),
+                    "value_map": {1: "rock", 2: "soil"},
+                }
+            }
+        )
+        elem = points_to_omf_pointset(pts)
+        types = {d.name: type(d).__name__ for d in elem.data}
+        assert "lith" in types
+        assert types["lith"] == "MappedData"
+        indices = np.asarray(elem.data[0].array)
+        legend = list(elem.data[0].legends[0].values)
+        # 1-based geoh5 [1,2,1] → 0-based OMF [0,1,0]
+        assert legend[indices[0]] == "rock"
+        assert legend[indices[1]] == "soil"
 
 
 def test_readme_reverse_example_public_types_and_dispatch(

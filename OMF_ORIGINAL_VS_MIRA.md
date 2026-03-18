@@ -314,20 +314,21 @@ for this path.
 
 ### Supported Data Types
 
-geoh5-bridge currently processes only **`ScalarData`** (floating-point
-arrays). All other OMF data types (`MappedData`, `StringData`, `VectorData`,
-etc.) are silently ignored during conversion.
+geoh5-bridge now supports **all major OMF data types** when converting to
+geoh5 and back:
 
-The `_omf_scalar_data()` helper extracts only `ScalarData` children:
+| OMF Data Type | geoh5 Data Type | Notes |
+|---|---|---|
+| `ScalarData` (float) | `FloatData` | ✅ Full support |
+| `ScalarData` (integer array) | `IntegerData` | ✅ Full support |
+| `StringData` | `TextData` | ✅ Full support |
+| `MappedData` + `Legend` | `ReferencedData` + value_map | ✅ Full support (0-based OMF ↔ 1-based geoh5) |
+| `Vector3Data` | Three `FloatData` channels (`name_x/y/z`) | ✅ Supported (decomposed) |
+| `Vector2Data` | Two `FloatData` channels (`name_x/y`) | ✅ Supported (decomposed) |
 
-```python
-def _omf_scalar_data(element) -> dict[str, tuple[np.ndarray, str]]:
-    result = {}
-    for d in element.data:
-        if isinstance(d, _omf.ScalarData):       # ← only scalar data
-            result[d.name] = (np.asarray(d.array, dtype=float), d.location)
-    return result
-```
+The `_add_omf_data_to_geoh5()` helper handles the conversion in the
+OMF → geoh5 direction. The `_geoh5_children_to_omf_data()` helper handles
+the geoh5 → OMF direction.
 
 An optional `data_names` keyword argument on every conversion function lets
 callers select a subset of data channels.
@@ -336,16 +337,27 @@ callers select a subset of data channels.
 
 Both `omf_surface_to_pyvista()` and `omf_surface_to_surface()` handle **both**
 `SurfaceGeometry` (explicit triangles) and `SurfaceGridGeometry` (structured
-grid) inputs. For `SurfaceGridGeometry`, the library **triangulates the grid**
-at conversion time: each grid cell is split into two triangles.
+grid) inputs.
 
-The resulting geoh5 `Surface` object stores the triangulated mesh as explicit
-vertices + triangles (no implicit grid structure is preserved). This is
-consistent and lossless for visualisation, but uses more storage than a
-structured grid representation would.
+**`omf_surface_to_surface()` with `prefer_grid2d=True` (default)**:
+When the input is `SurfaceGridGeometry` with *uniform* cell spacing and no
+`offset_w`, it is converted directly to a `geoh5py.Grid2D` object, preserving
+the implicit grid structure — matching the Mira fork behaviour.
 
-In contrast, the Mira fork converts `SurfaceGridGeometry` to a `geoh5py.Grid2D`
-object, which preserves the implicit grid structure.
+For surfaces with non-uniform spacing or elevation offsets (`offset_w`), the
+function falls back to triangulation and returns a `Surface`.
+
+**`omf_surface_to_grid2d()`** (new dedicated function):
+Converts `SurfaceGridGeometry` → `Grid2D` directly, raising a clear error for
+incompatible inputs (non-uniform spacing or `offset_w`).
+
+**`grid2d_to_omf_surface()`** (new function):
+Converts a `Grid2D` back to a `SurfaceElement` with `SurfaceGridGeometry`,
+deriving `axis_u`/`axis_v` from `rotation` and `dip`.
+
+**`omf_surface_to_surface()` with `prefer_grid2d=False`**:
+Always triangulates the grid, returning a `Surface` with explicit
+vertices + triangles. This preserves the original triangulation behaviour.
 
 ### No CLI Scripts
 
@@ -384,10 +396,11 @@ with Workspace.create("output.geoh5") as ws:
 | **PyVista → OMF** | ❌ | ❌ | ✅ |
 | **CLI scripts** | ❌ | ✅ `omf_to_geoh5`, `geoh5_to_omf` | ❌ |
 | **Float data** | n/a | ✅ | ✅ |
-| **Integer data** | n/a | ✅ | ❌ |
-| **String data** | n/a | ✅ | ❌ |
-| **Referenced / colormap data** | n/a | ✅ | ❌ |
-| **SurfaceGridGeometry** | n/a | → `Grid2D` (preserves structure) | Triangulated → `Surface` |
+| **Integer data** | n/a | ✅ | ✅ |
+| **String data** | n/a | ✅ | ✅ |
+| **Referenced / colormap data** | n/a | ✅ | ✅ |
+| **Vector3/2 data** | n/a | ❌ (not listed) | ✅ (decomposed to components) |
+| **SurfaceGridGeometry** | n/a | → `Grid2D` (preserves structure) | → `Grid2D` by default (or triangulated `Surface` with `prefer_grid2d=False`) |
 | **Compression control** | n/a | ✅ (gzip 0–9) | ❌ (geoh5py default) |
 | **Overwrite protection** | n/a | ✅ (refuses) | ❌ (up to caller) |
 | **Requires PyVista** | ❌ | ❌ | Optional (for PV path) |
@@ -400,18 +413,20 @@ with Workspace.create("output.geoh5") as ws:
 | `PointSetElement` | `geoh5py.Points` | `geoh5py.Points` |
 | `LineSetElement` | `geoh5py.Curve` | `geoh5py.Curve` |
 | `SurfaceElement` (triangles) | `geoh5py.Surface` | `geoh5py.Surface` |
-| `SurfaceElement` (grid) | **`geoh5py.Grid2D`** (structured) | `geoh5py.Surface` (triangulated) |
+| `SurfaceElement` (grid, uniform) | **`geoh5py.Grid2D`** (structured) | **`geoh5py.Grid2D`** (default, `prefer_grid2d=True`) |
+| `SurfaceElement` (grid, non-uniform or `offset_w`) | — | `geoh5py.Surface` (triangulated) |
 | `VolumeElement` | `geoh5py.BlockModel` | `geoh5py.BlockModel` |
 
 ### Data-Level Conversion Comparison
 
 | Data Type | Mira OMF → geoh5 | geoh5-bridge OMF → geoh5 |
 |---|---|---|
-| `ScalarData` (float) | ✅ `FloatData` | ✅ float64 array |
-| `ScalarData` (integer) | ✅ `IntegerData` | ❌ (skipped) |
-| `MappedData` + `Legend` | ✅ `ReferencedData` + colormap | ❌ (skipped) |
-| `StringData` | ✅ Text | ❌ (skipped) |
-| `VectorData` | ❌ (not listed) | ❌ (skipped) |
+| `ScalarData` (float) | ✅ `FloatData` | ✅ `FloatData` |
+| `ScalarData` (integer) | ✅ `IntegerData` | ✅ `IntegerData` |
+| `MappedData` + `Legend` | ✅ `ReferencedData` + colormap | ✅ `ReferencedData` + value_map |
+| `StringData` | ✅ `TextData` | ✅ `TextData` |
+| `Vector3Data` | ❌ (not listed) | ✅ Three `FloatData` (`name_x/y/z`) |
+| `Vector2Data` | ❌ (not listed) | ✅ Two `FloatData` (`name_x/y`) |
 
 ### Approach and Design Philosophy
 
@@ -422,7 +437,7 @@ with Workspace.create("output.geoh5") as ws:
 | **Entry point** | `GeoH5Writer(project, path)` constructor | `omf_surface_to_surface(elem, ws)` etc. |
 | **PyVista intermediate** | Not used | Optional intermediate layer for visualisation |
 | **Bidirectional API** | Symmetric: `from_omf` / `from_geoh5` on each class | Separate function pairs |
-| **Error handling** | Logs warnings and continues for unsupported types | Silently filters unsupported data types |
+| **Error handling** | Logs warnings and continues for unsupported types | Clear errors for unsupported geometry; silently skips unknown data subtypes |
 | **Workspace management** | `GeoH5Writer` creates and manages the workspace | Caller creates `Workspace`, passes it in |
 
 ---
@@ -461,11 +476,12 @@ Equivalent code using geoh5-bridge (no CLI, all in Python):
 
 ```python
 import omf
+from geoh5py.objects import Grid2D, Surface
 from geoh5py.workspace import Workspace
 from geoh5_bridge import (
     omf_pointset_to_points,
     omf_lineset_to_curve,
-    omf_surface_to_surface,
+    omf_surface_to_surface,   # returns Grid2D for grids, Surface for triangles
     omf_volume_to_blockmodel,
 )
 
@@ -479,6 +495,7 @@ with Workspace.create("my_model.geoh5") as ws:
         elif isinstance(elem, omf.LineSetElement):
             omf_lineset_to_curve(elem, ws)
         elif isinstance(elem, omf.SurfaceElement):
+            # prefer_grid2d=True (default): SurfaceGridGeometry → Grid2D
             omf_surface_to_surface(elem, ws)
         elif isinstance(elem, omf.VolumeElement):
             omf_volume_to_blockmodel(elem, ws)
@@ -486,9 +503,7 @@ with Workspace.create("my_model.geoh5") as ws:
 
 ---
 
-## 6. Notable Differences in `SurfaceGridGeometry` Handling
-
-This is the most significant technical divergence between the two approaches.
+## 6. `SurfaceGridGeometry` Handling
 
 ### Mira fork
 
@@ -504,39 +519,29 @@ if isinstance(element, SurfaceElement) and isinstance(element.geometry, SurfaceG
 
 ### geoh5-bridge
 
-`SurfaceGridGeometry` is **triangulated** and stored as an explicit triangle
-mesh in a `geoh5py.Surface` object. The triangulation logic computes node
-positions from the grid parameters, then splits each cell into two triangles:
+geoh5-bridge now matches Mira's approach as the default:
 
-```python
-# geoh5-bridge: SurfaceGridGeometry → triangulated Surface
-nu = len(tensor_u) + 1   # node columns
-nv = len(tensor_v) + 1   # node rows
+- **`omf_surface_to_grid2d()`**: converts `SurfaceGridGeometry` directly to
+  `Grid2D` (requires uniform spacing, no `offset_w`).
+- **`omf_surface_to_surface(prefer_grid2d=True)`** (default): uses Grid2D for
+  compatible grids and falls back to triangulation otherwise.
+- **`omf_surface_to_surface(prefer_grid2d=False)`**: always triangulates.
+- **`grid2d_to_omf_surface()`**: converts `Grid2D` back to `SurfaceElement`
+  with `SurfaceGridGeometry`.
 
-for j in range(nv):
-    for i in range(nu):
-        pt = origin + u_edges[i]*axis_u + v_edges[j]*axis_v
-        if offset_w is not None:
-            pt[2] += offset_w[j * nu + i]
-        vertices.append(pt)
-
-for j in range(nv - 1):
-    for i in range(nu - 1):
-        v0, v1 = j*nu + i,   j*nu + (i+1)
-        v2, v3 = (j+1)*nu+i, (j+1)*nu+(i+1)
-        triangles.append([v0, v1, v3])
-        triangles.append([v0, v3, v2])
-```
+For surfaces with `offset_w` (per-node elevation offsets), geoh5-bridge
+triangulates and stores the result as an explicit `Surface`. Grid2D does not
+support per-node Z-offsets in geoh5py.
 
 **Trade-offs:**
 
-| | Mira (`Grid2D`) | geoh5-bridge (`Surface` triangulated) |
-|---|---|---|
-| Preserves grid structure | ✅ | ❌ |
-| Round-trip back to `SurfaceGridGeometry` | ✅ | ❌ (becomes explicit triangles) |
-| Compatible with all triangle-mesh tools | ❌ (Grid2D only) | ✅ |
-| Storage efficiency | ✅ (compact grid params) | ❌ (stores all vertices) |
-| Z-offset (`offset_w`) support | ✅ | ✅ |
+| | Mira (`Grid2D`) | geoh5-bridge (Grid2D, uniform) | geoh5-bridge (Surface, non-uniform/offset) |
+|---|---|---|---|
+| Preserves grid structure | ✅ | ✅ | ❌ |
+| Round-trip back to `SurfaceGridGeometry` | ✅ | ✅ | ❌ (becomes explicit triangles) |
+| Compatible with all triangle-mesh tools | ❌ (Grid2D only) | ❌ (Grid2D only) | ✅ |
+| Storage efficiency | ✅ (compact grid params) | ✅ (compact grid params) | ❌ (stores all vertices) |
+| Z-offset (`offset_w`) support | ✅ | ❌ | ✅ |
 
 ---
 
@@ -556,13 +561,16 @@ correctly as a structured `Grid2D` object.
 its **PyVista integration** (missing from both other approaches). It enables
 OMF data to be visualised, manipulated, and exported back to OMF via PyVista
 meshes — a workflow not available in the Mira fork. The direct OMF ↔ geoh5
-path avoids the PyVista dependency for pure conversion workflows. The main
-current limitations compared to Mira are the restriction to scalar (float)
-data only and the lack of CLI entry-points. Grid surfaces are triangulated
-rather than preserved as structured objects.
+path avoids the PyVista dependency for pure conversion workflows.
+
+As of this version, geoh5-bridge now matches the Mira fork in data-type
+coverage (float, integer, string, referenced/colormap, vector) and in
+`SurfaceGridGeometry` handling (Grid2D by default). The remaining differences
+are the lack of CLI entry-points and compression control (both exclusive to
+the Mira fork), and the presence of the PyVista bridge path (exclusive to
+geoh5-bridge).
 
 The two conversion approaches are largely complementary: geoh5-bridge excels
 at PyVista-mediated workflows and is suitable when you need to manipulate
-geometry before writing; the Mira fork excels at comprehensive, lossless
-batch conversion with full data type support and a simple command-line
-interface.
+geometry before writing; the Mira fork excels at simple CLI batch conversion
+and is tightly integrated into the `mira-omf` package ecosystem.
