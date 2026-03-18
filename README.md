@@ -71,8 +71,10 @@ bidirectional bridges to [PyVista](https://docs.pyvista.org/) and the
 | `Points` | `omf.PointSetElement` | `points_to_omf_pointset()` |
 | `omf.LineSetElement` | `Curve` | `omf_lineset_to_curve()` |
 | `Curve` | `omf.LineSetElement` | `curve_to_omf_lineset()` |
-| `omf.SurfaceElement` (`SurfaceGeometry` or `SurfaceGridGeometry`) | `Surface` | `omf_surface_to_surface()` |
+| `omf.SurfaceElement` (`SurfaceGeometry` or `SurfaceGridGeometry`) | `Surface` or `Grid2D` | `omf_surface_to_surface()` |
+| `omf.SurfaceElement` (`SurfaceGridGeometry`, uniform spacing) | `Grid2D` | `omf_surface_to_grid2d()` |
 | `Surface` | `omf.SurfaceElement` (`SurfaceGeometry`) | `surface_to_omf_surface()` |
+| `Grid2D` | `omf.SurfaceElement` (`SurfaceGridGeometry`) | `grid2d_to_omf_surface()` |
 | `omf.VolumeElement` | `BlockModel` | `omf_volume_to_blockmodel()` |
 | `BlockModel` | `omf.VolumeElement` | `blockmodel_to_omf_volume()` |
 
@@ -368,8 +370,12 @@ mesh = omf_surface_to_pyvista(elem)
 Convert OMF elements directly to/from geoh5py objects without an
 intermediate PyVista step.  Requires `pip install geoh5-bridge[omf]`.
 
-Both `SurfaceGeometry` and `SurfaceGridGeometry` are fully supported —
-grid surfaces are triangulated in-memory before being written to geoh5.
+Both `SurfaceGeometry` and `SurfaceGridGeometry` are fully supported.
+When a grid surface has **uniform cell spacing** and **no per-node
+elevation offsets** (`offset_w`), `omf_surface_to_surface()` returns a
+`Grid2D` by default (controlled by the `prefer_grid2d` parameter).  In
+all other cases — explicit triangle meshes, non-uniform spacing, or grids
+with elevation offsets — a triangulated `Surface` is returned.
 
 ```python
 import omf
@@ -392,20 +398,39 @@ with Workspace.create("output.geoh5") as ws:
         elif isinstance(element, omf.LineSetElement):
             omf_lineset_to_curve(element, ws)
         elif isinstance(element, omf.SurfaceElement):
-            # Works for both SurfaceGeometry and SurfaceGridGeometry
+            # SurfaceGridGeometry with uniform spacing → Grid2D (default)
+            # SurfaceGeometry or non-uniform/offset grids  → Surface
             omf_surface_to_surface(element, ws)
         elif isinstance(element, omf.VolumeElement):
             omf_volume_to_blockmodel(element, ws)
 ```
 
+To force all surfaces to be triangulated as `Surface` regardless of
+geometry type, pass `prefer_grid2d=False`:
+
+```python
+with Workspace.create("output.geoh5") as ws:
+    for element in project.elements:
+        if isinstance(element, omf.SurfaceElement):
+            # Always returns a Surface (triangulated)
+            omf_surface_to_surface(element, ws, prefer_grid2d=False)
+```
+
 Reverse direction — export geoh5 objects to OMF:
 
 ```python
+from geoh5py.objects import Grid2D
+from geoh5_bridge import grid2d_to_omf_surface
+
 with Workspace("existing.geoh5") as ws:
     for obj in ws.objects:
         if isinstance(obj, BlockModel):
             elem = blockmodel_to_omf_volume(obj)
+        elif isinstance(obj, Grid2D):
+            # Grid2D → SurfaceGridGeometry (preserves implicit grid structure)
+            elem = grid2d_to_omf_surface(obj)
         elif isinstance(obj, Surface):
+            # Surface → SurfaceGeometry (explicit triangles)
             elem = surface_to_omf_surface(obj)
         elif isinstance(obj, Curve):
             elem = curve_to_omf_lineset(obj)
@@ -413,27 +438,96 @@ with Workspace("existing.geoh5") as ws:
             elem = points_to_omf_pointset(obj)
 ```
 
+#### `SurfaceGridGeometry` → `Grid2D` (direct conversion)
+
+For OMF grid surfaces that map cleanly to a geoh5py `Grid2D` (uniform
+cell spacing, no per-node elevation offsets, axes aligned to the
+horizontal plane), use `omf_surface_to_grid2d()` directly:
+
+```python
+import omf
+import numpy as np
+from geoh5py.workspace import Workspace
+from geoh5_bridge import omf_surface_to_grid2d
+
+# Build a 4×3 cell uniform grid surface
+geom = omf.SurfaceGridGeometry(
+    origin=np.array([500000.0, 7000000.0, 350.0]),
+    tensor_u=np.full(4, 25.0),   # 4 columns, 25 m spacing
+    tensor_v=np.full(3, 25.0),   # 3 rows,    25 m spacing
+    axis_u=np.array([1.0, 0.0, 0.0]),
+    axis_v=np.array([0.0, 1.0, 0.0]),
+    # No offset_w → flat surface at z = 350 m
+)
+elem = omf.SurfaceElement(name="Topography", geometry=geom)
+
+with Workspace.create("output.geoh5") as ws:
+    grid = omf_surface_to_grid2d(elem, ws, name="Topography")
+    # grid is a geoh5py Grid2D:
+    #   origin      = (500000, 7000000, 350)
+    #   u_cell_size = 25.0,  u_count = 4
+    #   v_cell_size = 25.0,  v_count = 3
+    #   rotation    = 0°,    dip     = 0°
+```
+
+`omf_surface_to_grid2d()` raises `TypeError` if the element does not use
+`SurfaceGridGeometry`, and `ValueError` if the spacing is non-uniform or
+`offset_w` is present (use `omf_surface_to_surface()` for those cases).
+
+#### `Grid2D` → `SurfaceGridGeometry` (round-trip)
+
+`grid2d_to_omf_surface()` converts a geoh5py `Grid2D` back to an OMF
+`SurfaceElement` with `SurfaceGridGeometry`, preserving the implicit grid
+structure (uniform spacing, rotation, and dip):
+
+```python
+import omf
+from geoh5py.workspace import Workspace
+from geoh5_bridge import grid2d_to_omf_surface
+
+with Workspace("existing.geoh5") as ws:
+    grid = ws.get_entity("Topography")[0]   # a Grid2D object
+    elem = grid2d_to_omf_surface(grid, name="Topography")
+    # elem.geometry is SurfaceGridGeometry — compact, no triangulation needed
+
+    project = omf.Project(name="Export", elements=[elem])
+    omf.OMFWriter(project, "topography.omf")
+```
+
+The `rotation` angle (degrees CCW from East) maps to `axis_u`, and the
+`dip` angle (degrees above horizontal) controls the tilt of `axis_v`.  A
+`dip` of `0°` yields a flat horizontal grid; `90°` yields a vertical
+plane.
+
 #### How `omf_surface_to_surface()` handles grid surfaces
 
-When the OMF surface uses `SurfaceGridGeometry`, the function reconstructs
-the grid node positions from `origin`, `tensor_u`/`tensor_v`, and
-`axis_u`/`axis_v`, then applies per-node Z offsets from `offset_w` if
-present.  The resulting vertex grid is split into triangles and stored as
-a standard geoh5py `Surface` (vertices + triangle cells).
+When the OMF surface uses `SurfaceGridGeometry`, the function first checks
+whether the grid is compatible with `Grid2D` (uniform spacing, no
+`offset_w`).  If `prefer_grid2d=True` (the default) and the check passes,
+it delegates to `omf_surface_to_grid2d()` and returns a `Grid2D`.
+Otherwise it reconstructs the grid node positions from `origin`,
+`tensor_u`/`tensor_v`, and `axis_u`/`axis_v`, applies any per-node Z
+offsets from `offset_w`, and stores the result as a triangulated `Surface`.
 
-| OMF geometry | Node count | Triangle count | `offset_w` |
-|---|---|---|---|
-| `SurfaceGeometry` | explicit | explicit | N/A |
-| `SurfaceGridGeometry` | `(nu+1) × (nv+1)` | `2 × nu × nv` | optional per-node Z shift |
+| OMF geometry | `prefer_grid2d` | `offset_w` | uniform spacing | Result |
+|---|---|---|---|---|
+| `SurfaceGeometry` | any | N/A | N/A | `Surface` (explicit triangles) |
+| `SurfaceGridGeometry` | `True` (default) | absent | yes | `Grid2D` |
+| `SurfaceGridGeometry` | `True` (default) | present | any | `Surface` (triangulated) |
+| `SurfaceGridGeometry` | `True` (default) | absent | no | `Surface` (triangulated) |
+| `SurfaceGridGeometry` | `False` | any | any | `Surface` (triangulated) |
 
-where `nu = len(tensor_u)` and `nv = len(tensor_v)`.
+where `nu = len(tensor_u)` and `nv = len(tensor_v)`.  When triangulated,
+the node count is `(nu+1) × (nv+1)` and the triangle count is
+`2 × nu × nv`.
 
 > **Note:** `surface_to_omf_surface()` always exports a geoh5py `Surface`
 > as `SurfaceGeometry` (explicit triangles), preserving the mesh exactly.
-> There is no lossy round-trip for grid surfaces — a grid surface imported
-> from OMF and then exported back to OMF will be stored as explicit
-> triangles rather than as a grid, which is compatible with all OMF
-> readers but uses more storage.
+> For `Grid2D` objects, use `grid2d_to_omf_surface()` to preserve the
+> compact grid representation.  A grid surface imported from OMF via
+> `omf_surface_to_surface()` with `prefer_grid2d=False` and then exported
+> back to OMF will be stored as explicit triangles rather than as a grid,
+> which is compatible with all OMF readers but uses more storage.
 
 ## Related packages and resources
 
