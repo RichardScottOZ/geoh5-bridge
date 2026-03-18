@@ -304,6 +304,7 @@ intermediate PyVista step.  Requires `pip install geoh5-bridge[omf]`.
 import omf
 from geoh5py.workspace import Workspace
 from geoh5_bridge import (
+    Points, Curve, Surface, BlockModel,
     omf_pointset_to_points, points_to_omf_pointset,
     omf_lineset_to_curve,   curve_to_omf_lineset,
     omf_surface_to_surface, surface_to_omf_surface,
@@ -329,14 +330,14 @@ Reverse direction — export geoh5 objects to OMF:
 ```python
 with Workspace("existing.geoh5") as ws:
     for obj in ws.objects:
-        if isinstance(obj, Points):
-            elem = points_to_omf_pointset(obj)
-        elif isinstance(obj, Curve):
-            elem = curve_to_omf_lineset(obj)
+        if isinstance(obj, BlockModel):
+            elem = blockmodel_to_omf_volume(obj)
         elif isinstance(obj, Surface):
             elem = surface_to_omf_surface(obj)
-        elif isinstance(obj, BlockModel):
-            elem = blockmodel_to_omf_volume(obj)
+        elif isinstance(obj, Curve):
+            elem = curve_to_omf_lineset(obj)
+        elif isinstance(obj, Points):
+            elem = points_to_omf_pointset(obj)
 ```
 
 > **Note:** `omf_surface_to_surface()` only supports `SurfaceGeometry`
