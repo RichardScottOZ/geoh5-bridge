@@ -268,12 +268,13 @@ from geoh5_bridge import (
 )
 
 # Load an OMF project and convert every element to PyVista
-project = omf.load("model.omf")
+reader = omf.OMFReader("model.omf")
+project = reader.get_project()
 multiblock = omf_project_to_pyvista(project)   # pyvista.MultiBlock
 
 # Modify in PyVista and write back to OMF
 project2 = pyvista_to_omf_project(multiblock, project_name="Updated")
-omf.save(project2, "model_updated.omf")
+omf.OMFWriter(project2, "model_updated.omf")
 ```
 
 Individual element conversions follow the same pattern:
@@ -311,7 +312,8 @@ from geoh5_bridge import (
     omf_volume_to_blockmodel, blockmodel_to_omf_volume,
 )
 
-project = omf.load("model.omf")
+reader = omf.OMFReader("model.omf")
+project = reader.get_project()
 
 with Workspace.create("output.geoh5") as ws:
     for element in project.elements:
