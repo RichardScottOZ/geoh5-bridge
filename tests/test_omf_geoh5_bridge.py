@@ -334,8 +334,8 @@ class TestOmfSurfaceToSurface:
         }
         assert "value" in children
 
-    def test_grid_surface_raises(self, workspace):
-        """SurfaceGridGeometry should raise TypeError."""
+    def test_grid_surface_basic(self, workspace):
+        """SurfaceGridGeometry should be triangulated automatically."""
         grid_surf = omf.SurfaceElement(
             name="GridSurf",
             geometry=omf.SurfaceGridGeometry(
@@ -346,8 +346,61 @@ class TestOmfSurfaceToSurface:
                 axis_v=[0.0, 1.0, 0.0],
             ),
         )
-        with pytest.raises(TypeError, match="SurfaceGeometry"):
-            omf_surface_to_surface(grid_surf, workspace)
+        surf = omf_surface_to_surface(grid_surf, workspace)
+        # 3 u-nodes × 2 v-nodes = 6 vertices
+        assert len(surf.vertices) == 6
+        # 2 u-cells × 1 v-cell × 2 triangles = 4 triangles
+        assert surf.cells.shape == (4, 3)
+        assert surf.name == "GridSurf"
+
+    def test_grid_surface_with_data(self, workspace):
+        """SurfaceGridGeometry with vertex data."""
+        grid_surf = omf.SurfaceElement(
+            name="GridData",
+            geometry=omf.SurfaceGridGeometry(
+                origin=[0.0, 0.0, 0.0],
+                tensor_u=np.array([1.0, 1.0]),
+                tensor_v=np.array([1.0]),
+                axis_u=[1.0, 0.0, 0.0],
+                axis_v=[0.0, 1.0, 0.0],
+            ),
+            data=[
+                omf.ScalarData(
+                    name="elev",
+                    array=np.arange(6, dtype=float),
+                    location="vertices",
+                )
+            ],
+        )
+        surf = omf_surface_to_surface(grid_surf, workspace)
+        children = {
+            c.name: c.values for c in surf.children if hasattr(c, "values")
+        }
+        assert "elev" in children
+        np.testing.assert_array_almost_equal(
+            children["elev"], np.arange(6, dtype=float), decimal=4
+        )
+
+    def test_grid_surface_with_offset(self, workspace):
+        """SurfaceGridGeometry with offset_w."""
+        offsets = np.array([0.0, 0.5, 1.0, 0.0, 0.5, 1.0])
+        grid_surf = omf.SurfaceElement(
+            name="GridOffset",
+            geometry=omf.SurfaceGridGeometry(
+                origin=[0.0, 0.0, 0.0],
+                tensor_u=np.array([1.0, 1.0]),
+                tensor_v=np.array([1.0]),
+                axis_u=[1.0, 0.0, 0.0],
+                axis_v=[0.0, 1.0, 0.0],
+                offset_w=offsets,
+            ),
+        )
+        surf = omf_surface_to_surface(grid_surf, workspace)
+        assert len(surf.vertices) == 6
+        # Verify z-values match offsets
+        np.testing.assert_array_almost_equal(
+            surf.vertices[:, 2], offsets
+        )
 
 
 class TestSurfaceToOmfSurface:

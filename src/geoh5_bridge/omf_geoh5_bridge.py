@@ -237,16 +237,16 @@ def omf_surface_to_surface(
     name: str | None = None,
     data_names: list[str] | None = None,
 ) -> Surface:
-    """Convert an OMF SurfaceElement (triangle mesh) to a geoh5py Surface.
+    """Convert an OMF SurfaceElement to a geoh5py Surface.
 
-    Only ``SurfaceGeometry`` (explicit triangles) is supported. For
-    ``SurfaceGridGeometry`` (structured grid surfaces), convert to
-    PyVista first using :func:`omf_surface_to_pyvista`.
+    Handles both ``SurfaceGeometry`` (explicit triangles) and
+    ``SurfaceGridGeometry`` (structured grid surfaces).  Grid surfaces
+    are triangulated automatically.
 
     Parameters
     ----------
     omf_surface : omf.SurfaceElement
-        OMF surface element with SurfaceGeometry.
+        OMF surface element.
     workspace : geoh5py.workspace.Workspace
         Open geoh5py Workspace.
     name : str, optional
@@ -257,25 +257,59 @@ def omf_surface_to_surface(
     Returns
     -------
     geoh5py.objects.Surface
-
-    Raises
-    ------
-    TypeError
-        If the geometry is not ``SurfaceGeometry``.
     """
     import omf as _omf
     from geoh5py.objects import Surface
 
     geom = omf_surface.geometry
-    if not isinstance(geom, _omf.SurfaceGeometry):
-        raise TypeError(
-            f"Expected SurfaceGeometry, got {type(geom).__name__}. "
-            "Use omf_surface_to_pyvista for grid surfaces."
+    obj_name = name or omf_surface.name or "Surface"
+
+    if isinstance(geom, _omf.SurfaceGeometry):
+        vertices = np.asarray(geom.vertices, dtype=float)
+        cells = np.asarray(geom.triangles, dtype=np.uint32)
+
+    elif isinstance(geom, _omf.SurfaceGridGeometry):
+        origin = np.asarray(geom.origin, dtype=float)
+        tensor_u = np.asarray(geom.tensor_u, dtype=float)
+        tensor_v = np.asarray(geom.tensor_v, dtype=float)
+        axis_u = np.asarray(geom.axis_u, dtype=float)
+        axis_v = np.asarray(geom.axis_v, dtype=float)
+
+        nu = len(tensor_u) + 1
+        nv = len(tensor_v) + 1
+
+        u_edges = np.concatenate([[0], np.cumsum(tensor_u)])
+        v_edges = np.concatenate([[0], np.cumsum(tensor_v)])
+
+        offset_w = (
+            np.asarray(geom.offset_w) if geom.offset_w is not None else None
         )
 
-    obj_name = name or omf_surface.name or "Surface"
-    vertices = np.asarray(geom.vertices, dtype=float)
-    cells = np.asarray(geom.triangles, dtype=np.uint32)
+        vertices_list: list[np.ndarray] = []
+        for j in range(nv):
+            for i in range(nu):
+                pt = origin + u_edges[i] * axis_u + v_edges[j] * axis_v
+                if offset_w is not None:
+                    idx = j * nu + i
+                    if idx < len(offset_w):
+                        pt = pt + np.array([0, 0, float(offset_w[idx])])
+                vertices_list.append(pt)
+
+        vertices = np.array(vertices_list, dtype=float)
+
+        tri_list: list[list[int]] = []
+        for j in range(nv - 1):
+            for i in range(nu - 1):
+                v0 = j * nu + i
+                v1 = v0 + 1
+                v2 = v0 + nu
+                v3 = v2 + 1
+                tri_list.append([v0, v1, v3])
+                tri_list.append([v0, v3, v2])
+
+        cells = np.array(tri_list, dtype=np.uint32)
+    else:
+        raise TypeError(f"Unsupported surface geometry type: {type(geom)}")
 
     surface = Surface.create(
         workspace, vertices=vertices, cells=cells, name=obj_name

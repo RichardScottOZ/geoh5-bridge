@@ -342,10 +342,9 @@ with Workspace("existing.geoh5") as ws:
             elem = points_to_omf_pointset(obj)
 ```
 
-> **Note:** `omf_surface_to_surface()` only supports `SurfaceGeometry`
-> (explicit triangle meshes).  For `SurfaceGridGeometry` (structured grid
-> surfaces), convert via PyVista first using `omf_surface_to_pyvista()` and
-> then `pyvista_to_surface()`.
+> **Note:** `omf_surface_to_surface()` supports both `SurfaceGeometry`
+> (explicit triangle meshes) and `SurfaceGridGeometry` (structured grid
+> surfaces).  Grid surfaces are triangulated automatically.
 
 ## Related packages and resources
 
