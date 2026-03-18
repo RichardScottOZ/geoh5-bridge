@@ -39,8 +39,10 @@ from geoh5_bridge.omf_bridge import (
 from geoh5_bridge.omf_geoh5_bridge import (
     blockmodel_to_omf_volume,
     curve_to_omf_lineset,
+    grid2d_to_omf_surface,
     omf_lineset_to_curve,
     omf_pointset_to_points,
+    omf_surface_to_grid2d,
     omf_surface_to_surface,
     omf_volume_to_blockmodel,
     points_to_omf_pointset,
@@ -95,7 +97,9 @@ __all__ = [
     "omf_lineset_to_curve",
     "curve_to_omf_lineset",
     "omf_surface_to_surface",
+    "omf_surface_to_grid2d",
     "surface_to_omf_surface",
+    "grid2d_to_omf_surface",
     "omf_volume_to_blockmodel",
     "blockmodel_to_omf_volume",
 ]
