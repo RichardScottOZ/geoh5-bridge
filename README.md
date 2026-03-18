@@ -56,8 +56,8 @@ bidirectional bridges to [PyVista](https://docs.pyvista.org/) and the
 | `pyvista.PolyData` | `omf.PointSetElement` | `pyvista_to_omf_pointset()` |
 | `omf.LineSetElement` | `pyvista.PolyData` (lines) | `omf_lineset_to_pyvista()` |
 | `pyvista.PolyData` (lines) | `omf.LineSetElement` | `pyvista_to_omf_lineset()` |
-| `omf.SurfaceElement` | `pyvista.PolyData` (mesh) | `omf_surface_to_pyvista()` |
-| `pyvista.PolyData` (mesh) | `omf.SurfaceElement` | `pyvista_to_omf_surface()` |
+| `omf.SurfaceElement` (`SurfaceGeometry` or `SurfaceGridGeometry`) | `pyvista.PolyData` (mesh) | `omf_surface_to_pyvista()` |
+| `pyvista.PolyData` (mesh) | `omf.SurfaceElement` (`SurfaceGeometry`) | `pyvista_to_omf_surface()` |
 | `omf.VolumeElement` | `pyvista.RectilinearGrid` | `omf_volume_to_pyvista()` |
 | `pyvista.RectilinearGrid` | `omf.VolumeElement` | `pyvista_to_omf_volume()` |
 | `omf.Project` | `pyvista.MultiBlock` | `omf_project_to_pyvista()` |
@@ -71,8 +71,8 @@ bidirectional bridges to [PyVista](https://docs.pyvista.org/) and the
 | `Points` | `omf.PointSetElement` | `points_to_omf_pointset()` |
 | `omf.LineSetElement` | `Curve` | `omf_lineset_to_curve()` |
 | `Curve` | `omf.LineSetElement` | `curve_to_omf_lineset()` |
-| `omf.SurfaceElement` | `Surface` | `omf_surface_to_surface()` |
-| `Surface` | `omf.SurfaceElement` | `surface_to_omf_surface()` |
+| `omf.SurfaceElement` (`SurfaceGeometry` or `SurfaceGridGeometry`) | `Surface` | `omf_surface_to_surface()` |
+| `Surface` | `omf.SurfaceElement` (`SurfaceGeometry`) | `surface_to_omf_surface()` |
 | `omf.VolumeElement` | `BlockModel` | `omf_volume_to_blockmodel()` |
 | `BlockModel` | `omf.VolumeElement` | `blockmodel_to_omf_volume()` |
 
@@ -283,8 +283,8 @@ Individual element conversions follow the same pattern:
 # OMF → PyVista
 pd = omf_pointset_to_pyvista(pointset)
 pd = omf_lineset_to_pyvista(lineset)
-pd = omf_surface_to_pyvista(surface_elem)   # supports both SurfaceGeometry
-                                             # and SurfaceGridGeometry
+pd = omf_surface_to_pyvista(surface_elem)   # handles both SurfaceGeometry
+                                             # and SurfaceGridGeometry (see below)
 rg = omf_volume_to_pyvista(volume)
 
 # PyVista → OMF
@@ -294,12 +294,82 @@ surf_elem = pyvista_to_omf_surface(mesh, name="Fault")
 volume    = pyvista_to_omf_volume(rg, name="Density")
 ```
 
+#### OMF surface geometry types
+
+OMF `SurfaceElement` objects can use one of two geometry representations:
+
+**`SurfaceGeometry`** — explicit triangle mesh
+
+The most common type.  Stores a list of 3-D vertices and a list of
+triangle index triples (exactly like a geoh5py `Surface`).
+
+```python
+import omf
+import numpy as np
+
+# Build a simple triangle
+geom = omf.SurfaceGeometry(
+    vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float),
+    triangles=np.array([[0, 1, 2]], dtype=int),
+)
+elem = omf.SurfaceElement(name="Fault", geometry=geom)
+
+# Convert to PyVista PolyData
+mesh = omf_surface_to_pyvista(elem)
+```
+
+**`SurfaceGridGeometry`** — structured (regular) grid surface
+
+Used for DEM-like or map-view surfaces where the XY layout is a
+regular grid and each node may have an independent Z elevation
+(`offset_w`).  Defined by:
+
+| Attribute | Type | Description |
+|---|---|---|
+| `origin` | `[x, y, z]` | Grid origin (corner node) |
+| `tensor_u` | `float[]` | Cell spacings along the U axis (len = number of columns) |
+| `tensor_v` | `float[]` | Cell spacings along the V axis (len = number of rows) |
+| `axis_u` | `[dx, dy, dz]` | Unit vector for the U direction |
+| `axis_v` | `[dx, dy, dz]` | Unit vector for the V direction |
+| `offset_w` | `float[]` or `None` | Per-node Z displacement, row-major order `j*(nu+1)+i` |
+
+The node count is `(len(tensor_u)+1) × (len(tensor_v)+1)`.  Each grid
+cell is split into two triangles, so `omf_surface_to_pyvista()` returns
+a `PolyData` with `2 × len(tensor_u) × len(tensor_v)` triangles.
+
+```python
+import omf
+import numpy as np
+
+# 3×2 cell grid (4 nodes wide, 3 nodes tall) in the XY plane
+geom = omf.SurfaceGridGeometry(
+    origin=np.array([0.0, 0.0, 0.0]),
+    tensor_u=np.array([10.0, 10.0, 10.0]),   # 3 columns → 4 node columns
+    tensor_v=np.array([10.0, 10.0]),           # 2 rows    → 3 node rows
+    axis_u=np.array([1.0, 0.0, 0.0]),
+    axis_v=np.array([0.0, 1.0, 0.0]),
+    # Optional: per-node elevation offsets (4×3 = 12 nodes, row-major)
+    offset_w=np.array([0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4, 5], dtype=float),
+)
+elem = omf.SurfaceElement(name="Topography", geometry=geom)
+
+# Grid is triangulated automatically → pyvista.PolyData (12 triangles)
+mesh = omf_surface_to_pyvista(elem)
+```
+
+> **Tip:** `pyvista_to_omf_surface()` always writes back as
+> `SurfaceGeometry` (explicit triangles), which is universally compatible
+> with all OMF readers.
+
 ---
 
 ### OMF ↔ geoh5 bridge (direct, no PyVista required)
 
 Convert OMF elements directly to/from geoh5py objects without an
 intermediate PyVista step.  Requires `pip install geoh5-bridge[omf]`.
+
+Both `SurfaceGeometry` and `SurfaceGridGeometry` are fully supported —
+grid surfaces are triangulated in-memory before being written to geoh5.
 
 ```python
 import omf
@@ -322,6 +392,7 @@ with Workspace.create("output.geoh5") as ws:
         elif isinstance(element, omf.LineSetElement):
             omf_lineset_to_curve(element, ws)
         elif isinstance(element, omf.SurfaceElement):
+            # Works for both SurfaceGeometry and SurfaceGridGeometry
             omf_surface_to_surface(element, ws)
         elif isinstance(element, omf.VolumeElement):
             omf_volume_to_blockmodel(element, ws)
@@ -342,9 +413,27 @@ with Workspace("existing.geoh5") as ws:
             elem = points_to_omf_pointset(obj)
 ```
 
-> **Note:** `omf_surface_to_surface()` supports both `SurfaceGeometry`
-> (explicit triangle meshes) and `SurfaceGridGeometry` (structured grid
-> surfaces).  Grid surfaces are triangulated automatically.
+#### How `omf_surface_to_surface()` handles grid surfaces
+
+When the OMF surface uses `SurfaceGridGeometry`, the function reconstructs
+the grid node positions from `origin`, `tensor_u`/`tensor_v`, and
+`axis_u`/`axis_v`, then applies per-node Z offsets from `offset_w` if
+present.  The resulting vertex grid is split into triangles and stored as
+a standard geoh5py `Surface` (vertices + triangle cells).
+
+| OMF geometry | Node count | Triangle count | `offset_w` |
+|---|---|---|---|
+| `SurfaceGeometry` | explicit | explicit | N/A |
+| `SurfaceGridGeometry` | `(nu+1) × (nv+1)` | `2 × nu × nv` | optional per-node Z shift |
+
+where `nu = len(tensor_u)` and `nv = len(tensor_v)`.
+
+> **Note:** `surface_to_omf_surface()` always exports a geoh5py `Surface`
+> as `SurfaceGeometry` (explicit triangles), preserving the mesh exactly.
+> There is no lossy round-trip for grid surfaces — a grid surface imported
+> from OMF and then exported back to OMF will be stored as explicit
+> triangles rather than as a grid, which is compatible with all OMF
+> readers but uses more storage.
 
 ## Related packages and resources
 
