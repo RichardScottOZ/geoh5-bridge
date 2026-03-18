@@ -8,6 +8,12 @@ import pytest
 from geoh5py.objects import BlockModel, Curve, Points, Surface
 from geoh5py.workspace import Workspace
 
+from geoh5_bridge import (
+    BlockModel as PublicBlockModel,
+    Curve as PublicCurve,
+    Points as PublicPoints,
+    Surface as PublicSurface,
+)
 from geoh5_bridge.omf_geoh5_bridge import (
     blockmodel_to_omf_volume,
     curve_to_omf_lineset,
@@ -444,6 +450,32 @@ class TestBlockmodelToOmfVolume:
             np.asarray(omf_volume.data[0].array),
             decimal=4,
         )
+
+
+def test_readme_reverse_example_public_types_and_dispatch(
+    sample_points, sample_curve, sample_surface, sample_blockmodel
+):
+    assert PublicPoints is Points
+    assert PublicCurve is Curve
+    assert PublicSurface is Surface
+    assert PublicBlockModel is BlockModel
+
+    elements = []
+    for obj in [sample_points, sample_curve, sample_surface, sample_blockmodel]:
+        if isinstance(obj, PublicBlockModel):
+            elem = blockmodel_to_omf_volume(obj)
+        elif isinstance(obj, PublicSurface):
+            elem = surface_to_omf_surface(obj)
+        elif isinstance(obj, PublicCurve):
+            elem = curve_to_omf_lineset(obj)
+        elif isinstance(obj, PublicPoints):
+            elem = points_to_omf_pointset(obj)
+        elements.append(elem)
+
+    assert isinstance(elements[0], omf.PointSetElement)
+    assert isinstance(elements[1], omf.LineSetElement)
+    assert isinstance(elements[2], omf.SurfaceElement)
+    assert isinstance(elements[3], omf.VolumeElement)
 
 
 class TestOmfGeoh5FileRoundtrip:

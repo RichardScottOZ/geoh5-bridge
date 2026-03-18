@@ -1,5 +1,7 @@
 """geoh5-bridge: Bidirectional conversions between pydata/PyVista/OMF and geoh5."""
 
+from geoh5py.objects import BlockModel, Curve, Points, Surface
+
 from geoh5_bridge.raster import grid2d_to_raster, raster_to_grid2d, raster_to_points
 from geoh5_bridge.vector import (
     curve_to_geodataframe,
@@ -46,6 +48,11 @@ from geoh5_bridge.omf_geoh5_bridge import (
 )
 
 __all__ = [
+    # geoh5py object types used in examples
+    "Points",
+    "Curve",
+    "Surface",
+    "BlockModel",
     # Raster conversions
     "grid2d_to_raster",
     "raster_to_grid2d",
